@@ -1,82 +1,250 @@
-// https://www.twilio.com/blog/web-scraping-and-parsing-html-in-node-js-with-jsdomconsole.log('start')
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+
+// starting page of crawler
+// this will be overwritten with the last page
+// saved into /out directory
+let currentpage = 0
+
+// max pages to crawl in one run
+let maxpages = 1
+
+const useLearnTemplate = 1
+const learnTemplate = [
+  { desire: 'deu', native: 'jpn' },
+  { desire: 'jpn', native: 'eng' },
+]
+
+// this will download the available audio
+const downloadAudio = true
+
+// show browser or use terminal only
+const useHeadless = true
+
+// paths
+const path       = require('path');
+const outputAnki = path.join(__dirname, '/decks/');
+const outputPath = path.join(__dirname, '/out/');
+const audioPath  = path.join(__dirname, '/out/audio/');
+
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+
+process.stdin.resume();
 
 
-const jsdom = require("jsdom");
-const { JSDOM } = jsdom;
-const fetch = require('node-fetch');
+//do something when app is closing
+process.on('SIGINT', exitHandler.bind(null, {exit:true}));
+process.on('SIGUSR1', exitHandler.bind(null, {exit:true}));
+process.on('SIGUSR2', exitHandler.bind(null, {exit:true}));
 
-// fs = require('fs');
-// fs.writeFile('helloworld.txt', 'Hello World!', function (err) {
-//   if (err) return console.log(err);
-//   console.log('Hello World > helloworld.txt');
-// });
+const puppeteer   = require("puppeteer");
+const fs          = require('fs');
+const request     = require('request');
+const AnkiExport  = require('anki-apkg-export').default;
 
-// window.location.href = "https://tatoeba.org/deu/sentences/search?query=&from=jpn&to=eng&user=&orphans=no&unapproved=no&has_audio=yes&tags=&list=&native=&trans_filter=limit&trans_to=&trans_link=&trans_user=&trans_orphan=&trans_unapproved=&trans_has_audio=&sort=relevance&sort_reverse=yes"
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
 
-const entryUrl = "https://tatoeba.org/deu/sentences/search?query=&from=jpn&to=eng&user=&orphans=no&unapproved=no&has_audio=yes&tags=&list=&native=&trans_filter=limit&trans_to=&trans_link=&trans_user=&trans_orphan=&trans_unapproved=&trans_has_audio=&sort=relevance&sort_reverse=yes"
-console.time('fetch')
-fetch(entryUrl)
-    .then(res => res.text())
-    .then(body => {
-      console.timeEnd('fetch')
+const desire = learnTemplate[useLearnTemplate].desire
+const native = learnTemplate[useLearnTemplate].native
 
-      console.log(body)
+const decknameAnki = `tatoeba-sentences-${desire}-${native}`
+const filenameAnki = `tatoeba_sentences-${desire}-${native}.apkg`
+const jsonFilename = `tatoeba-crawled-${desire}-${native}.json`
+const lastpageFilename = `last-crawled-page-${desire}-${native}.txt`
+let oldPage = 0
+let crawledData = [];
+let finishedProcess = false
 
-      console.time('parse')
-      const { document } = (new JSDOM(body)).window;
-      console.timeEnd('parse')
-
-      console.time('extract')
-
-      console.log(document.querySelectorAll('[ng-if="vm.sentence.highlightedText"]'));
-
-      let data = [
-        [...document.querySelectorAll('[ng-if="vm.sentence.highlightedText"]')].map(t => t.innerText),
-        [...document.querySelectorAll('[ng-bind-html="transcription.html"]')].map(t => t.innerHTML),
-        [...document.querySelectorAll('[ng-if="vm.sentence.user && vm.sentence.user.username"] a[ng-href*="/deu/sentences/show/"]')].map(t => t.text.slice(1)),
-        [...document.querySelectorAll('.sentence a[href*="https://audio.tatoeba.org"]')].map(t => t.href),
-      ]
-      let mapped = []
-      for (let i = 0; i < data[0].length; i++) {
-        mapped.push({
-          sentence: data[0][i],
-          sentenceFurigana: data[1][i],
-          id: data[2][i],
-          audio: data[3][i],
-        })
-      }
-      console.timeEnd('extract')
-
-      // console.log(mapped)
-
-      next = document.querySelector('a[rel="next"]').href
-      console.log(next)
-
-    });
-
-// document.addEventListener("DOMContentLoaded", function(event) {
-//   init();
-// });
-
-function init() {
-  data = [
-    [...document.querySelectorAll('[ng-if="vm.sentence.highlightedText"]')].map(t => t.innerText),
-    [...document.querySelectorAll('[ng-bind-html="transcription.html"]')].map(t => t.innerHTML),
-    [...document.querySelectorAll('[ng-if="vm.sentence.user && vm.sentence.user.username"] a[ng-href*="/deu/sentences/show/"]')].map(t => t.text.slice(1)),
-    [...document.querySelectorAll('.sentence a[href*="https://audio.tatoeba.org"]')].map(t => t.href),
-  ]
-  mapped = []
-  for (let i = 0; i < data[0].length; i++) {
-    mapped.push({
-      sentence: data[0][i],
-      sentenceFurigana: data[1][i],
-      id: data[2][i],
-      audio: data[3][i],
-    })
-  }
-  console.log(mapped)
-  next = document.querySelector('a[rel="next"]').href
-  console.log(next)
+if (!fs.existsSync(outputPath)){
+  fs.mkdirSync(outputPath);
+}
+if (!fs.existsSync(outputAnki)){
+  fs.mkdirSync(outputAnki);
+}
+if (!fs.existsSync(audioPath)){
+  fs.mkdirSync(audioPath);
 }
 
-// init();
+var download = function(url, dest, callback){
+  request.get(url)
+  .on('error', function(err) {console.log(err)} )
+  .pipe(fs.createWriteStream(dest))
+  .on('close', callback);
+};
+
+async function generateDeck() {
+  console.log('create anki deck')
+  try {
+    const apkg = new AnkiExport(decknameAnki, { template: {
+      questionFormat: '{{Front}}',
+      answerFormat: '{{FrontSide}}\n\n<hr id="answer">\n\n{{Back}}',
+      css: '.card {\n font-family: arial;\n font-size: 20px;\n text-align: center;\n color: black;\nbackground-color: white;\n}\n'
+    }});
+
+    crawledData.forEach(data => {
+      const audiofile = data.audio.split('/').pop()
+      let front = data.sentence || ''
+      let back = data.translation || ''
+      let furigana = data.sentenceFurigana || ''
+
+      if (downloadAudio) {
+        apkg.addMedia(audiofile, fs.readFileSync(audioPath + audiofile));
+      }
+
+      apkg.addCard(`${front}[sound:${audiofile}]`, `${furigana} <br><br>  ${back}`);
+      // apkg.addCard('card #2 front', 'card #2 back', { tags: ['nice', 'better card'] });
+      // apkg.addCard('card #3 with image <img src="anki.png" />', 'card #3 back');
+    })
+
+    return new Promise((resolve, reject) => {
+      apkg
+      .save()
+      .then(zip => {
+        fs.writeFileSync(outputAnki + filenameAnki, zip, 'binary');
+        resolve()
+        console.log(`Deck has been generated: ${outputAnki}${filenameAnki}`);
+      })
+      .catch(err => {
+          reject()
+          console.log(err.stack || err)
+        });
+    })
+  } catch(e) {
+    console.log(e)
+  }
+}
+
+const finish = async () => {
+  try {
+    fs.writeFileSync(outputPath + jsonFilename, JSON.stringify(crawledData, null, 2));
+
+    fs.writeFileSync(outputPath + lastpageFilename, ''+currentpage);
+
+    console.log('Save to file finished. last page was ', currentpage);
+
+    await generateDeck()
+
+    await browser.close();
+  } catch (e) {
+    console.log(e)
+  }
+}
+
+async function exitHandler(options, exitCode) {
+    if (options.cleanup) console.log('clean');
+    if (exitCode || exitCode === 0) {
+      console.log(options, exitCode, exitCode === 'SIGINT');
+    }
+
+    if (exitCode !== 130 && exitCode !== 'SIGINT') {
+      return
+    }
+
+    if (!finishedProcess) {
+      console.log('catch finish')
+      await finish()
+      console.log('save exit')
+    }
+
+    if (options.exit) process.exit();
+}
+
+
+let browser = {};
+
+(async () => {
+  try {
+    const oldData = await fs.readFileSync(outputPath + jsonFilename).toString();
+    oldPage = await fs.readFileSync(outputPath + lastpageFilename).toString();
+
+    if (oldData) {
+      console.log('continue old data')
+      crawledData = JSON.parse(oldData)
+    }
+    if (oldPage) {
+      currentpage = +oldPage
+      console.log('continue old page ' + currentpage)
+      maxpages += currentpage
+    } else {
+      oldPage = 0
+    }
+  } catch(e) {
+    console.log('skip old data')
+  }
+
+  console.log('open puppeteer browser')
+  browser = await puppeteer.launch({ headless: useHeadless });
+  const page = await browser.newPage();
+
+  // https://tatoeba.org/deu/sentences/search?query=&from=deu&to=jpn&user=&orphans=no&unapproved=no&has_audio=yes&tags=&list=&native=&trans_filter=limit&trans_to=jpn&trans_link=&trans_user=&trans_orphan=&trans_unapproved=&trans_has_audio=&sort_reverse=yes&page=8&sort=relevance
+  // https://tatoeba.org/deu/sentences/search?query=&from=deu&to=jpn&user=&orphans=no&unapproved=no&has_audio=yes&tags=&list=&native=&trans_filter=limit&trans_to=jpn&trans_link=&trans_user=&trans_orphan=&trans_unapproved=&trans_has_audio=&sort=relevance&sort_reverse=yes
+  await crawlpage(page, `https://tatoeba.org/deu/sentences/search?query=&from=${desire}&to=${native}&user=&orphans=no&unapproved=no&has_audio=yes&tags=&list=&native=&trans_filter=limit&trans_to=${native}&trans_link=&trans_user=&trans_orphan=&trans_unapproved=&trans_has_audio=&sort=relevancepage=${currentpage}&sort_reverse=yes`)
+
+  finishedProcess = true
+  process.stdin.pause();
+
+  await finish()
+})()
+
+const crawlpage = async (page, url) => {
+  await page.goto(url, { waitUntil:"domcontentloaded" });
+  await page.waitForSelector('[ng-if="vm.sentence.highlightedText"]', { visible: true })
+  console.log('page loaded')
+
+  const res = await page.evaluate(() => {
+
+    let mapped = [...document.querySelectorAll('[sentence-and-translations]')].map(data => {
+      return {
+      sentence: (data.querySelector('[ng-if="vm.sentence.highlightedText"]') || {}).innerText,
+      sentenceFurigana: (data.querySelector('[ng-bind-html="transcription.html"]') || {}).innerHTML,
+      id: data.querySelector('[ng-if*="vm.sentence.user"] > a').innerText.slice(1),
+      audio: data.querySelector('.sentence a[href*="https://audio.tatoeba.org"]').href,
+      translation: data.querySelector('.translation').querySelector('span').innerText
+      }
+    })
+
+    next = document.querySelector('a[rel="next"]').href
+
+    console.log('crawled data')
+
+    return {
+      data: mapped,
+      next: next
+    }
+  });
+
+  if (downloadAudio) {
+    console.log('start downloading audio')
+
+    let downloadPromises = []
+    res.data.forEach( function(data) {
+      let promise = new Promise((resolve, reject) => {
+        var filename =  data.audio.split('/').pop();
+        console.log('Downloading ' + filename);
+        download(data.audio, audioPath + filename, () => {
+          console.log('Finished Downloading' + filename)
+          resolve()
+        });
+      })
+      downloadPromises.push(promise)
+    });
+
+    await Promise.all(downloadPromises)
+
+    console.log('finished downloading audio from page')
+  }
+
+  crawledData = [...crawledData, ...res.data]
+
+  currentpage += 1
+
+  if (currentpage <= maxpages) {
+    console.log('crawl next site ' + currentpage)
+    await crawlpage(page, res.next)
+  }
+}
