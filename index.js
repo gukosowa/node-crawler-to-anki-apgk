@@ -8,7 +8,12 @@
 let currentpage = 0
 
 // max pages to crawl in one run
-let maxpages = 1
+let maxpages = 100
+
+// use old data and append to it - todo
+const useOldData = false
+
+const clearOldData = false
 
 const useLearnTemplate = 1
 const learnTemplate = [
@@ -60,15 +65,42 @@ let oldPage = 0
 let crawledData = [];
 let finishedProcess = false
 
+const clearFolder = (folder) => fs.readdir(folder, (err, files) => {
+  if (err) throw err;
+
+  for (const file of files) {
+    fs.unlink(path.join(folder, file), err => {
+      if (err) throw err;
+    });
+  }
+});
+
 if (!fs.existsSync(outputPath)){
   fs.mkdirSync(outputPath);
+} else {
+  if (clearOldData) {
+    try {
+      clearFolder(outputPath)
+    } catch (e) {
+      console.log('error on clear data')
+    }
+  }
 }
 if (!fs.existsSync(outputAnki)){
   fs.mkdirSync(outputAnki);
 }
 if (!fs.existsSync(audioPath)){
   fs.mkdirSync(audioPath);
+} else {
+  if (clearOldData) {
+    try {
+      clearFolder(audioPath)
+    } catch (e) {
+      console.log('error on clear data')
+    }
+  }
 }
+
 
 var download = function(url, dest, callback){
   request.get(url)
@@ -159,20 +191,26 @@ let browser = {};
 
 (async () => {
   try {
-    const oldData = await fs.readFileSync(outputPath + jsonFilename).toString();
-    oldPage = await fs.readFileSync(outputPath + lastpageFilename).toString();
+    oldPage = 0
+    if (useOldData) {
+      const oldData = await fs.readFileSync(outputPath + jsonFilename).toString();
+      oldPage = await fs.readFileSync(outputPath + lastpageFilename).toString();
 
-    if (oldData) {
-      console.log('continue old data')
-      crawledData = JSON.parse(oldData)
-    }
-    if (oldPage) {
-      currentpage = +oldPage
-      console.log('continue old page ' + currentpage)
-      maxpages += currentpage
+      if (oldData) {
+        console.log('continue from old data')
+        crawledData = JSON.parse(oldData)
+      }
+      if (oldPage) {
+        currentpage = +oldPage
+        console.log('continue from old page ' + currentpage)
+        maxpages += currentpage
+      } else {
+        oldPage = 0
+      }
     } else {
-      oldPage = 0
+      console.log('skip old data')
     }
+
   } catch(e) {
     console.log('skip old data')
   }
